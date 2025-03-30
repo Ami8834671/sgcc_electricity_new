@@ -7,6 +7,7 @@ import time
 import random
 import base64
 import sqlite3
+import pymysql
 import undetected_chromedriver as uc
 from datetime import datetime
 from selenium import webdriver
@@ -16,6 +17,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 from sensor_updator import SensorUpdator
+from selenium.webdriver.remote.remote_connection import LOGGER
 
 from const import *
 
@@ -93,14 +95,25 @@ class DataFetcher:
         else:
             self._chromium_version = self._get_chromium_version()
 
-        # 获取 ENABLE_DATABASE_STORAGE 的值，默认为 False
-        self.enable_database_storage = os.getenv("ENABLE_DATABASE_STORAGE", "false").lower() == "true"
+        # 获取 ENABLE_DATABASE_SQLITE_STORAGE 的值，默认为 False
+        self.ENABLE_DATABASE_SQLITE_STORAGE = os.getenv("ENABLE_DATABASE_SQLITE_STORAGE", "false").lower() == "true"
+        self.sensor_enabled = os.getenv("HA_SENSOR_ENABLED", "false").lower() == "true"
+        
+        # 获取 ENABLE_DATABASE_MARIADB_STORAGE 的值，默认为 False
+        self.ENABLE_DATABASE_MARIADB_STORAGE = os.getenv("ENABLE_DATABASE_MARIADB_STORAGE", "false").lower() == "true"
+        self.MARIADB_URL = os.getenv("MARIADB_URL", "HOMEASSISTANT.LOCAL")
+        self.MARIADB_PORT = int(os.getenv("MARIADB_PORT", "3306"))
+        self.MARIADB_USER = os.getenv("MARIADB_USER", "user")
+        self.MARIADB_PASSWORD = os.getenv("MARIADB_PASSWORD", "password")
+        self.MARIADB_DB_NAME = os.getenv("MARIADB_DB_NAME", "homeassistant")
+        
         self.DRIVER_IMPLICITY_WAIT_TIME = int(os.getenv("DRIVER_IMPLICITY_WAIT_TIME", 60))
         self.RETRY_TIMES_LIMIT = int(os.getenv("RETRY_TIMES_LIMIT", 5))
         self.LOGIN_EXPECTED_TIME = int(os.getenv("LOGIN_EXPECTED_TIME", 10))
         self.RETRY_WAIT_TIME_OFFSET_UNIT = int(os.getenv("RETRY_WAIT_TIME_OFFSET_UNIT", 10))
         self.IGNORE_USER_ID = os.getenv("IGNORE_USER_ID", "xxxxx,xxxxx").split(",")
-
+        LOGGER.setLevel(logging.WARNING)
+        # logging.disable(logging.CRITICAL)
     # @staticmethod
     def _click_button(self, driver, button_search_type, button_search_key):
         '''wrapped click function, click only when the element is clickable'''
@@ -144,33 +157,44 @@ class DataFetcher:
         """创建数据库集合，db_name = electricity_daily_usage_{user_id}
         :param user_id: 用户ID"""
         try:
-            # 创建数据库
-            DB_NAME = os.getenv("DB_NAME", "homeassistant.db")
-            if 'PYTHON_IN_DOCKER' in os.environ: 
-                DB_NAME = "/data/" + DB_NAME
-            self.connect = sqlite3.connect(DB_NAME)
-            self.connect.cursor()
-            logging.info(f"Database of {DB_NAME} created successfully.")
             # 创建表名
-            self.table_name = f"daily{user_id}"
-            sql = f'''CREATE TABLE IF NOT EXISTS {self.table_name} (
-                    date DATE PRIMARY KEY NOT NULL, 
-                    usage REAL NOT NULL)'''
-            self.connect.execute(sql)
+            self.table_name = f"sgcc_daily{user_id}"
+            sqldaily = f'''CREATE TABLE IF NOT EXISTS {self.table_name} (
+                                    sgcc_date DATE PRIMARY KEY NOT NULL, 
+                                    sgcc_value REAL NOT NULL)'''
+            # 创建data表名
+            self.table_expand_name = f"sgcc_data{user_id}"
+            sqldata = f'''CREATE TABLE IF NOT EXISTS {self.table_expand_name} (
+                                    sgcc_name VARCHAR(255) PRIMARY KEY NOT NULL,
+                                    sgcc_value VARCHAR(255) NOT NULL)'''
+
+            if self.ENABLE_DATABASE_SQLITE_STORAGE:
+                # 创建数据库
+                SQLITE_DB_NAME = os.getenv("SQLITE_DB_NAME", "homeassistant.db")
+                if 'PYTHON_IN_DOCKER' in os.environ:
+                    SQLITE_DB_NAME = "/data/" + SQLITE_DB_NAME
+                self.connect = sqlite3.connect(SQLITE_DB_NAME)
+                logging.info(f"Sqlite Database of {SQLITE_DB_NAME} created successfully.")
+                self.cursor = self.connect.cursor()
+            else:
+                self.connect = pymysql.connect(host=self.MARIADB_URL, port=self.MARIADB_PORT, user=self.MARIADB_USER, password=self.MARIADB_PASSWORD, db=self.MARIADB_DB_NAME)
+                self.cursor = self.connect.cursor()
+                logging.info(f"Mariadb Database of connect successfully.")
+
+            self.cursor.execute(sqldaily)
             logging.info(f"Table {self.table_name} created successfully")
-			
-			# 创建data表名
-            self.table_expand_name = f"data{user_id}"
-            sql = f'''CREATE TABLE IF NOT EXISTS {self.table_expand_name} (
-                    name TEXT PRIMARY KEY NOT NULL,
-                    value TEXT NOT NULL)'''
-            self.connect.execute(sql)
+
+            self.cursor.execute(sqldata)
             logging.info(f"Table {self.table_expand_name} created successfully")
-			
-        # 如果表已存在，则不会创建
+
+        except pymysql.err.OperationalError as e:
+            logging.debug(f"Mariadb Create db or Table error:{e.args[0]} - {e.args[1]} ")
+        except pymysql.err.ProgrammingError as e:
+            logging.debug(f"Mariadb Create db or Table error:{e.args[0]} - {e.args[1]} ")
+        except pymysql.err.InternalError as e:
+            logging.debug(f"Mariadb Create db or Table error:{e.args[0]} - {e.args[1]} ")
         except sqlite3.Error as e:
-            logging.debug(f"Create db or Table error:{e}")
-            return False
+            logging.debug(f"Sqlite Create db or Table error: {sqlite3.Error}")
         return True
 
     def insert_data(self, data:dict):
@@ -179,8 +203,13 @@ class DataFetcher:
             return
         # 创建索引
         try:
-            sql = f"INSERT OR REPLACE INTO {self.table_name} VALUES(strftime('%Y-%m-%d','{data['date']}'),{data['usage']});"
-            self.connect.execute(sql)
+            if self.ENABLE_DATABASE_SQLITE_STORAGE:
+                sql = f"INSERT OR REPLACE INTO {self.table_name} VALUES(strftime('%Y-%m-%d','{data['sgcc_date']}'),{data['sgcc_value']});"
+            else:
+                sql = f'''INSERT INTO {self.table_name} VALUES (DATE_FORMAT('{data['sgcc_date']}','%Y-%m-%d'),{data['sgcc_value']}) 
+                                    ON DUPLICATE KEY UPDATE sgcc_date = VALUES(sgcc_date);'''
+                logging.debug(sql)
+            self.cursor.execute(sql)
             self.connect.commit()
         except BaseException as e:
             logging.debug(f"Data update failed: {e}")
@@ -191,8 +220,13 @@ class DataFetcher:
             return
         # 创建索引
         try:
-            sql = f"INSERT OR REPLACE INTO {self.table_expand_name} VALUES('{data['name']}','{data['value']}');"
-            self.connect.execute(sql)
+            if self.ENABLE_DATABASE_SQLITE_STORAGE:
+                sql = f"INSERT OR REPLACE INTO {self.table_expand_name} VALUES('{data['sgcc_name']}','{data['sgcc_value']}');"
+            else:
+                sql = f'''INSERT INTO {self.table_expand_name} VALUES ('{data['sgcc_name']}','{data['sgcc_value']}') 
+                                    ON DUPLICATE KEY UPDATE sgcc_value = VALUES(sgcc_value);'''
+                logging.debug(sql)
+            self.cursor.execute(sql)
             self.connect.commit()
         except BaseException as e:
             logging.debug(f"Data update failed: {e}")
@@ -289,16 +323,22 @@ class DataFetcher:
 
         """main logic here"""
         if platform.system() == 'Windows':
-            driverfile_path = r'C:\Users\mxwang\Project\msedgedriver.exe'
-            driver = webdriver.Edge(executable_path=driverfile_path)
+            driverfile_path = r'D:\2\sgcc_electricity_new\edgedriver_win64\msedgedriver.exe'
+            from selenium.webdriver.edge.service import Service
+            service = Service(executable_path=driverfile_path)
+            driver = webdriver.Edge(service=service)
         else:
             driver = self._get_webdriver()
         
         driver.maximize_window() 
         time.sleep(self.RETRY_WAIT_TIME_OFFSET_UNIT)
         logging.info("Webdriver initialized.")
-        updator = SensorUpdator()
-        
+        if self.sensor_enabled:
+            updator = SensorUpdator()
+            logging.info(f"The HA_SENSOR_ENABLED config True.") 
+        else:        
+            logging.info(f"The HA_SENSOR_ENABLED config False.")  
+            
         try:
             if os.getenv("DEBUG_MODE", "false").lower() == "true":
                 if self._login(driver,phone_code=True):
@@ -340,8 +380,10 @@ class DataFetcher:
                 else:
                     ### get data 
                     balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage  = self._get_all_data(driver, user_id, userid_index)
-                    updator.update_one_userid(user_id, balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage)
-        
+                    if self.sensor_enabled:
+                        updator.update_one_userid(user_id, balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage)
+                    else:
+                        logging.info(f"The user ID {current_userid} task run successfully!")
                     time.sleep(self.RETRY_WAIT_TIME_OFFSET_UNIT)
             except Exception as e:
                 if (userid_index != len(user_id_list)):
@@ -359,6 +401,10 @@ class DataFetcher:
         return current_userid
     
     def _choose_current_userid(self, driver, userid_index):
+        elements = driver.find_elements(By.CLASS_NAME, "button_confirm")
+        if elements:
+            self._click_button(driver, By.XPATH, f'''//*[@id="app"]/div/div[2]/div/div/div/div[2]/div[2]/div/button''')
+        time.sleep(self.RETRY_WAIT_TIME_OFFSET_UNIT)
         self._click_button(driver, By.CLASS_NAME, "el-input__suffix")
         time.sleep(self.RETRY_WAIT_TIME_OFFSET_UNIT)
         self._click_button(driver, By.XPATH, f"/html/body/div[2]/div[1]/div[1]/ul/li[{userid_index+1}]/span")
@@ -408,14 +454,14 @@ class DataFetcher:
             logging.error(f"Get month power usage for {user_id} failed, pass")
 
         # 新增储存用电量
-        if self.enable_database_storage:
+        if self.ENABLE_DATABASE_SQLITE_STORAGE or self.ENABLE_DATABASE_MARIADB_STORAGE:
             # 将数据存储到数据库
-            logging.info("enable_database_storage is true, we will store the data to the database.")
+            logging.info("ENABLE_DATABASE_SQLITE_STORAGE or ENABLE_DATABASE_MARIADB_STORAGE is true, we will store the data to the database.")
             # 按天获取数据 7天/30天
             date, usages = self._get_daily_usage_data(driver)
             self._save_user_data(user_id, balance, last_daily_date, last_daily_usage, date, usages, month, month_usage, month_charge, yearly_charge, yearly_usage)
         else:
-            logging.info("enable_database_storage is false, we will not store the data to the database.")
+            logging.info("ENABLE_DATABASE_SQLITE_STORAGE and or ENABLE_DATABASE_MARIADB_STORAGE is false, we will not store the data to the database.")
 
         
         if month_charge:
@@ -600,27 +646,27 @@ class DataFetcher:
         # 连接数据库集合
         if self.connect_user_db(user_id):
             # 写入当前户号
-            dic = {'name': 'user', 'value': f"{user_id}"}
+            dic = {'sgcc_name': 'user', 'sgcc_value': f"{user_id}"}
             self.insert_expand_data(dic)
             # 写入剩余金额
-            dic = {'name': 'balance', 'value': f"{balance}"}
+            dic = {'sgcc_name': 'balance', 'sgcc_value': f"{balance}"}
             self.insert_expand_data(dic)
             # 写入最近一次更新时间
-            dic = {'name': f"daily_date", 'value': f"{last_daily_date}"}
+            dic = {'sgcc_name': f"daily_date", 'sgcc_value': f"{last_daily_date}"}
             self.insert_expand_data(dic)
             # 写入最近一次更新时间用电量
-            dic = {'name': f"daily_usage", 'value': f"{last_daily_usage}"}
+            dic = {'sgcc_name': f"daily_usage", 'sgcc_value': f"{last_daily_usage}"}
             self.insert_expand_data(dic)
             
             # 写入年用电量
-            dic = {'name': 'yearly_usage', 'value': f"{yearly_usage}"}
+            dic = {'sgcc_name': 'yearly_usage', 'sgcc_value': f"{yearly_usage}"}
             self.insert_expand_data(dic)
             # 写入年用电电费
-            dic = {'name': 'yearly_charge', 'value': f"{yearly_charge} "}
+            dic = {'sgcc_name': 'yearly_charge', 'sgcc_value': f"{yearly_charge} "}
             self.insert_expand_data(dic)
             
             for index in range(len(date)):
-                dic = {'date': date[index], 'usage': float(usages[index])}
+                dic = {'sgcc_date': date[index], 'sgcc_value': float(usages[index])}
                 # 插入到数据库
                 try:
                     self.insert_data(dic)
@@ -646,10 +692,10 @@ class DataFetcher:
             else:
                 month_usage = None
             # 写入本月电量
-            dic = {'name': f"month_usage", 'value': f"{month_usage}"}
+            dic = {'sgcc_name': f"month_usage", 'sgcc_value': f"{month_usage}"}
             self.insert_expand_data(dic)
             # 写入本月电费
-            dic = {'name': f"month_charge", 'value': f"{month_charge}"}
+            dic = {'sgcc_name': f"month_charge", 'sgcc_value': f"{month_charge}"}
             self.insert_expand_data(dic)
             # dic = {'date': month[index], 'usage': float(month_usage[index]), 'charge': float(month_charge[index])}
             self.connect.close()

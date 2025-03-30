@@ -1,5 +1,5 @@
 name: "SGCC Electricity"
-version: "v1.6.4"
+version: "v1.6.5"
 slug: "sgcc_electricity"
 description: "获取国网电费数据的插件"
 url: "https://github.com/ARC-MX/sgcc_electricity_new"
@@ -10,34 +10,65 @@ host_network: true
 startup: application
 boot: auto
 init: false
-image: "registry.cn-hangzhou.aliyuncs.com/arcw/sgcc_electricity-{arch}"
+#image: "registry.cn-hangzhou.aliyuncs.com/arcw/sgcc_electricity-{arch}"
 map:
-  - config:rw
+  - addon_config:rw
+  - homeassistant_config:rw
 options:
-  PHONE_NUMBER: ""
-  PASSWORD: ""  
-  IGNORE_USER_ID: "xxxx,xxxx"
-  ENABLE_DATABASE_STORAGE: false
-  DB_NAME: "homeassistant.db"
-  HASS_URL: "http://homeassistant.local:8123/"
-  HASS_TOKEN: ""
-  JOB_START_TIME: "07:00"
-  RETRY_WAIT_TIME_OFFSET_UNIT: 15
-  DATA_RETENTION_DAYS: 7
-  RECHARGE_NOTIFY: false
-  BALANCE: 5.0
-  PUSHPLUS_TOKEN: "xxxx,xxxx"
+  logins:
+    phone: ""
+    password: ""
+  db_mode: Close
+  sqlite:
+    sqlite_db_name: "home-assistant_v2.db"
+    sqlite_db_path: "homeassistant"
+  mariadb:
+    mariadb_url: "homeassistant.local"
+    mariadb_port: 3306
+    mariadb_user: "user"
+    mariadb_password: "password"
+    mariadb_db_name: "homeassistant"
+  data_retention_days: "7"
+  ha_sensor_enabled: false 
+  has_sensor:
+    hass_url: "http://homeassistant.local:8123/"
+    hass_token: ""
+  customize:
+    job_start_time: "07:00"
+    driver_implicity_wait_time: 60
+    retry_times_limit: 5
+    login_expected_time: 60
+    retry_wait_time_offset_unit: 10
+    log_level: "INFO"
+    recharge_notify: false
+    balance: 5.0
+    pushplus_token: ""
 schema:
-  PHONE_NUMBER: str
-  PASSWORD: password
-  IGNORE_USER_ID: str
-  ENABLE_DATABASE_STORAGE: bool
-  DB_NAME: str
-  HASS_URL: url
-  HASS_TOKEN: str
-  JOB_START_TIME: str
-  RETRY_WAIT_TIME_OFFSET_UNIT: int(2,30)
-  DATA_RETENTION_DAYS: int
-  RECHARGE_NOTIFY: bool 
-  BALANCE: float 
-  PUSHPLUS_TOKEN: str
+  logins:
+    phone: str
+    password: str
+  db_mode: list(Sqlite3|Mysql|Mariadb|Close)   
+  sqlite:
+    sqlite_db_name: str
+    sqlite_db_path: str
+  mariadb:
+    mariadb_url: str
+    mariadb_port: int
+    mariadb_user: str
+    mariadb_password: str
+    mariadb_db_name: str
+  data_retention_days: list(7|30) 
+  ha_sensor_enabled: bool  
+  has_sensor:
+    hass_url: str
+    hass_token: str
+  customize:
+    job_start_time: str
+    driver_implicity_wait_time: int
+    retry_times_limit: int
+    login_expected_time: int
+    retry_wait_time_offset_unit: int
+    log_level: list(INFO|DEBUG) 
+    recharge_notify: bool 
+    balance: float 
+    pushplus_token: "str?"

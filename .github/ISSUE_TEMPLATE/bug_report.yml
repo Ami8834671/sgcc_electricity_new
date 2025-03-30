@@ -25,6 +25,16 @@ body:
   - type: dropdown
     validations:
       required: true
+    id: selfTest
+    attributes:
+      label: 您是否手动登录国家电网网页并尝试获取数据？
+      options:
+        - 未尝试手动获取数据
+        - 手动登录不成功
+        - 已经手动登录国网并且可以正常获取数据
+  - type: dropdown
+    validations:
+      required: true
     id: installation
     attributes:
       label: 您使用的是哪种安装方式？
